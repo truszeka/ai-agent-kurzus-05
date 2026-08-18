@@ -1,10 +1,18 @@
 # 🌱 Plantbase
 
-> Parancssori (CLI) AI agent, amely a természetes nyelvű kérdést **SQL-re fordítja** egy növény-katalógus (`products`) felett, **read-only** lefuttatja, és **természetes nyelvű választ** ad. Önkiszolgáló analitika SQL-tudás nélkül.
+> AI agent, amely a természetes nyelvű kérdést **SQL-re fordítja** egy növény-katalógus (`products`) felett, **read-only** lefuttatja, és **természetes nyelvű választ** ad. Önkiszolgáló analitika SQL-tudás nélkül.
 
 A persona egy **lakberendező**, aki a szobák adottságai (fény, méret), az ügyfél igényei és a büdzsé alapján állít össze növénycsomagot. Az adat megvan, de a kinyerése SQL-tudást igényelne — a Plantbase ezt automatizálja.
 
 A projekt egy AI-agent kurzus kísérleti repója: a cél, hogy az agent mechanikája **az alapoktól, rétegről rétegre** látszódjon (echo → LLM → SQL-es tool), agent-framework nélkül.
+
+**Három belépési pont, egy agent-mag:**
+
+| Belépés                         | Kinek                 | Mit ad                                                                   |
+| ------------------------------- | --------------------- | ------------------------------------------------------------------------ |
+| **CLI** (`pnpm cli ask`)        | fejlesztő, demó       | a teljes mechanika élő trace-szel, rétegről rétegre                      |
+| **Katalógus-chat** (web)        | bárki                 | ugyanaz a kérdés-válasz, böngészőből, streamelve                         |
+| **Ügyféloldali use case** (web) | ügyfél + lakberendező | igényfelmérő → agent-tervezet → **kötelező emberi jóváhagyás** → ajánlat |
 
 ---
 
@@ -14,11 +22,12 @@ A projekt egy AI-agent kurzus kísérleti repója: a cél, hogy az agent mechani
 felhasználó kérdése
         │
         ▼
-   apps/cli  ──────────►  packages/core  (askAgent)
-  (commander,             │
-   readline)              │  1. system prompt (séma + szabályok, XML-tagolt)
-                          │  2. generateText (Vercel AI SDK)  ◄── stopWhen:
-                          │  3. a modell SQL-t ír  ──► runSql tool       stepCountIs(n)
+   apps/cli   ─────┐
+  (commander,      ├──►  packages/core  (askAgent / askIngestAgent / runAdvisorAgent)
+   readline)       │      │
+   apps/web  ──►   │      │  1. system prompt (séma + szabályok, XML-tagolt)
+   apps/server ────┘      │  2. streamText (Vercel AI SDK)  ◄── stopWhen:
+   (Express)              │  3. a modell SQL-t ír  ──► runSql tool     stepCountIs(n)
                           │  4. SELECT-guard + READ-ONLY kapcsolat ──► Postgres (products)
                           │  5. sorok ──► a modell magyar választ ad
                           ▼
@@ -26,7 +35,17 @@ felhasználó kérdése
                           +  logs/<timestamp>.json  +  logs/agent.log
 ```
 
-A `packages/core` **framework-agnostic**: nem ismeri a belépési pontot (CLI/API/web). Az agent a **Vercel AI SDK 6**-ra épül (`generateText` + `stopWhen: stepCountIs(n)`): a prompt → tool-hívás → tool-eredmény → ismétlés ciklust az SDK futtatja, de a lépésenkénti átláthatóságot a saját trace-rétegünk adja (`prepareStep`/`onStepFinish` → trace.ts). A loop eredetileg kézzel íródott a nyers Anthropic SDK fölé — a tananyag ezt a fejlődést követi.
+A `packages/core` **framework-agnostic**: nem ismeri a belépési pontot (CLI/API/web). Az agent a **Vercel AI SDK 6**-ra épül (`streamText` + `stopWhen: stepCountIs(n)`): a prompt → tool-hívás → tool-eredmény → ismétlés ciklust az SDK futtatja, de a lépésenkénti átláthatóságot a saját trace-rétegünk adja (`prepareStep`/`onStepFinish` → trace.ts). A loop eredetileg kézzel íródott a nyers Anthropic SDK fölé — a tananyag ezt a fejlődést követi.
+
+**Egy agent = prompt + toolok + loop.** A közös loop az `agents/agent-loop.ts`; minden agent egy
+vékony definíció a saját könyvtárában:
+
+| Agent   | Hol                     | Mit csinál                                              | Tooljai                                |
+| ------- | ----------------------- | ------------------------------------------------------- | -------------------------------------- |
+| query   | `agents/query-agent/`   | NL → SQL → magyar válasz                                | `runSql`, `getClientPreferences`       |
+| ingest  | `agents/ingest-agent/`  | katalógus-szerkesztés (az egyetlen írási út)            | `fetchFeed`, `runSql`, `upsertProduct` |
+| rag     | `agents/rag-agent/`     | gondozási kérdések a tudásbázisból                      | `searchKnowledge`                      |
+| advisor | `agents/advisor-agent/` | ügyfél-igényből csomag**tervezet** (JSON, Zod-validált) | `runSql`                               |
 
 ---
 
@@ -44,15 +63,17 @@ A Prisma (séma, migráció, seed) ezzel szemben a **READ-WRITE** kapcsolatot ha
 
 ## Tech stack
 
-| Réteg          | Eszköz                                                                         |
-| -------------- | ------------------------------------------------------------------------------ |
-| Monorepo       | Nx 23, pnpm workspaces, TypeScript (strict), Node LTS                          |
-| Agent          | Vercel AI SDK 6 (`generateText` + `stopWhen: stepCountIs`) + saját trace-réteg |
-| Validáció      | Zod (rendszer-határokon)                                                       |
-| CLI            | commander + `node:readline`                                                    |
-| Adatbázis      | PostgreSQL 17 (docker-compose, OrbStack), `pg` (read-only)                     |
-| ORM / migráció | Prisma 6 (séma, migráció, seed)                                                |
-| Tooling        | Vitest, ESLint, Prettier, tsx                                                  |
+| Réteg          | Eszköz                                                                       |
+| -------------- | ---------------------------------------------------------------------------- |
+| Monorepo       | Nx 23, pnpm workspaces, TypeScript (strict), Node LTS                        |
+| Agent          | Vercel AI SDK 6 (`streamText` + `stopWhen: stepCountIs`) + saját trace-réteg |
+| Validáció      | Zod (rendszer-határokon)                                                     |
+| CLI            | commander + `node:readline`                                                  |
+| API            | Express 5 (`/api/chat` streamelve + ügy-végpontok)                           |
+| Web            | Vite + React 19, Tailwind 4, shadcn/ui, `@ai-sdk/react` (useChat)            |
+| Adatbázis      | PostgreSQL 17 (docker-compose, OrbStack), `pg` (read-only)                   |
+| ORM / migráció | Prisma 6 (séma, migráció, seed)                                              |
+| Tooling        | Vitest, ESLint, Prettier, tsx                                                |
 
 ---
 
@@ -61,18 +82,24 @@ A Prisma (séma, migráció, seed) ezzel szemben a **READ-WRITE** kapcsolatot ha
 ```
 .
 ├── apps/
-│   ├── cli/             # plantbase CLI: ask parancs + interaktív mód
-│   ├── server/          # Express API: /api/chat + /debug/knowledge
-│   └── web/             # Vite + React chat UI, tool-kártyák
+│   ├── cli/                 # plantbase CLI: ask / ingest / knowledge-ingest
+│   ├── server/              # Express API: /api/chat + cases-routes.ts (ügy-végpontok)
+│   └── web/
+│       └── src/features/    # chat/ (katalógus-chat) + cases/ (űrlap, státusz, ellenőrzés)
 ├── packages/
-│   ├── core/            # agent-logika (framework-agnostic)
-│   │   └── src/lib/     # agent (Vercel AI SDK loop), config, prompts, trace, echo, rag
-│   │       └── tools/   # run-sql, search-knowledge, sql-guard, db-readonly, dispatch
-│   └── db/               # Prisma lib: séma (products, knowledge_chunks), migráció, generált kliens, seed
-├── seed/knowledge/      # tudásbázis-cikkek a knowledge:ingest scripthez
-├── docs/                # BRS, architektúra, stack, konvenciók, system-prompt, terv
-├── docker-compose.yml   # Postgres + read-only role (initdb)
-└── .env.example         # két DB-kapcsolat (RW/RO) + Anthropic kulcs/model
+│   ├── core/                # agent-logika (framework-agnostic)
+│   │   └── src/lib/
+│   │       ├── agents/      # agent-loop.ts + query- / ingest- / rag- / advisor-agent könyvtárak
+│   │       ├── tools/       # egy tool = egy könyvtár (run-sql, upsert-product, search-knowledge, …)
+│   │       ├── cases/       # az ÜGY: séma, JSON-tároló, életút (case-service.ts)
+│   │       ├── user-role/   # szerep-alapú képesség-kapcsolás (customer / admin)
+│   │       └── *.ts         # config.ts (Zod env-validáció), trace.ts (élő nyom + JSON log)
+│   └── db/                  # Prisma: séma (products, knowledge_chunks), migráció, seed, generált kliens
+├── seed/knowledge/          # tudásbázis-cikkek a `pnpm cli knowledge-ingest`-hez
+├── data/cases.json          # az ügytároló (futásidejű, nincs verziózva)
+├── docs/                    # BRS, architektúra, stack, konvenciók, system-prompt, use case terv
+├── docker-compose.yml       # Postgres + read-only role (initdb)
+└── .env.example             # két DB-kapcsolat (RW/RO) + Anthropic kulcs/model
 ```
 
 ---
@@ -83,6 +110,7 @@ A Prisma (séma, migráció, seed) ezzel szemben a **READ-WRITE** kapcsolatot ha
 - **Docker** (OrbStack a Postgreshez)
 - `psql` (opcionális, kézi ellenőrzéshez)
 - **Anthropic API-kulcs**
+- OpenAI + Cohere kulcs — **csak a RAG-úthoz** (a katalógus-kérdésekhez és az ügyféloldali use case-hez nem kell)
 
 ## Indulás
 
@@ -97,11 +125,16 @@ cp .env.example .env
 docker compose up -d
 
 # 4. Séma + kész seed (~30 növény) betöltése
-pnpm db:migrate        # init_products migráció
+pnpm db:migrate        # products + knowledge_chunks migrációk
 pnpm db:seed           # idempotens: 30 növény
 ```
 
 > A Postgres a **host 5433-as porton** fut (a 5432-t gyakran foglalja másik projekt) — lásd `docker-compose.yml` és `.env.example`.
+
+> Ha a `pnpm db:migrate` azt írja, hogy _„The migration … was modified after it was applied"_,
+> a fejlesztői adatbázis sémája elcsúszott a migrációs fájloktól. Fejlesztői DB-ben a megoldás
+> `pnpm db:reset` (dob + migrál + seedel — **az adat elvész**, ezért előbb nézd meg, van-e benne
+> érték). Már alkalmazott migrációs fájlt ne szerkessz: vegyél fel újat.
 
 ## Használat
 
@@ -114,6 +147,9 @@ pnpm cli ask
 
 # Csendes mód: csak a végső válasz, élő trace nélkül (a JSON nyom akkor is elkészül)
 pnpm cli ask --quiet "milyen pozsgásokat ajánlasz?"
+
+# Katalógus-szerkesztő agent (ÍR az adatbázisba); argumentum nélkül interaktív
+pnpm cli ingest "hozd be a tropicalhome feed új pozsgásait"
 
 # Súgó
 pnpm cli --help
@@ -177,19 +213,21 @@ a `products` katalógus továbbra is read-only Postgres.
 
 ## Hasznos scriptek
 
-| Script                    | Mit csinál                                                              |
-| ------------------------- | ----------------------------------------------------------------------- |
-| `pnpm cli ask "…"`        | CLI futtatása tsx-szel (nincs build futásonként)                        |
-| `pnpm db:migrate`         | Prisma migráció (dev)                                                   |
-| `pnpm db:seed`            | Seed betöltése (idempotens)                                             |
-| `pnpm db:studio`          | Prisma Studio                                                           |
-| `pnpm build`              | minden projekt buildje (`nx run-many -t build`)                         |
-| `pnpm test`               | Vitest (unit tesztek)                                                   |
-| `pnpm lint` / `typecheck` | ESLint / `tsc`                                                          |
-| `pnpm format`             | Prettier                                                                |
-| `pnpm server`             | Express API dev-módban (port 3001)                                      |
-| `pnpm web`                | Vite dev-szerver a webes felületekhez (port 4200)                       |
-| `pnpm knowledge:ingest`   | tudásbázis-cikkek darabolása + vektorizálása a knowledge_chunks táblába |
+| Script                         | Mit csinál                                                              |
+| ------------------------------ | ----------------------------------------------------------------------- |
+| `pnpm cli ask "…"`             | CLI futtatása tsx-szel (nincs build futásonként)                        |
+| `pnpm cli ingest "…"`          | katalógus-szerkesztő agent (ír az adatbázisba)                          |
+| `pnpm cli knowledge-ingest`    | tudásbázis-cikkek darabolása + vektorizálása a knowledge_chunks táblába |
+| `pnpm server`                  | Express API dev-módban (port 3001)                                      |
+| `pnpm web`                     | Vite dev-szerver a webes felületekhez (port 4200)                       |
+| `pnpm db:migrate`              | Prisma migráció (dev)                                                   |
+| `pnpm db:seed`                 | Seed betöltése (idempotens)                                             |
+| `pnpm db:reset`                | **destruktív**: drop + migrate + seed                                   |
+| `pnpm db:studio`               | Prisma Studio (localhost:5555)                                          |
+| `pnpm build`                   | minden projekt buildje (`nx run-many -t build`)                         |
+| `pnpm test`                    | Vitest (unit tesztek)                                                   |
+| `pnpm lint` / `typecheck`      | ESLint / `tsc`                                                          |
+| `pnpm format` / `format:check` | Prettier (ír / csak ellenőriz)                                          |
 
 ---
 
@@ -263,4 +301,11 @@ A részletek a [`docs/`](docs/) mappában:
 - [`dev-workflow.md`](docs/dev-workflow.md) — git, hookok, dokumentáció
 - [`golden-set.md`](docs/golden-set.md) — RAG golden set (raw vs. rerank), negatív teszt
 - [`tudasbazis-karbantartas.md`](docs/tudasbazis-karbantartas.md) — RAG index inkrementális karbantartás
+- [`ugyfeloldali-use-case-terv.md`](docs/ugyfeloldali-use-case-terv.md) — az ügyféloldali use case (folyamat, emberi kapu, metrikák)
+- [`demo-forgatokonyv.md`](docs/demo-forgatokonyv.md) — a sikeres és eszkalációs PoC-demó lépésről lépésre
+- [`meresi-terv.md`](docs/meresi-terv.md) — teljes mérési tábla, adatforrások, riportálás és pilotdöntés
+- [`kerdeslap.md`](docs/kerdeslap.md) — a hat kötelező és két saját vezetői kérdés megválaszolva
+- [`hf5-business-case.pptx`](docs/hf5-business-case.pptx) — döntéselőkészítő prezentáció a vezetői körnek (8 dia: adattérkép, mérési terv, rollout); forrása: [`scripts/build-hf5-deck.js`](scripts/build-hf5-deck.js)
+- [`superpowers/plans/2026-08-18-ugyfeloldali-use-case.md`](docs/superpowers/plans/2026-08-18-ugyfeloldali-use-case.md) — a use case megvalósítási lépéssora
+- [`ddd/model.md`](docs/ddd/model.md) · [`ddd/glossary.md`](docs/ddd/glossary.md) — domain-modell és egységes nyelv
 - [`proposal-implementacio.md`](docs/proposal-implementacio.md) — a fázisolt implementációs terv
