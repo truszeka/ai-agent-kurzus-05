@@ -1,0 +1,94 @@
+# Claude code review PR-okra — a HIVATALOS claude-code-action, "gyári" konfigurációval.
+# Nincs saját skill, nincs saját agent: csak egy prompt. (L1 a felhőben — 4. óra.)
+name: Claude Review
+
+on:
+  pull_request:
+    # ready_for_review kell a listába: draft PR-on nem futunk (lásd a jobok `if`-jét),
+    # ezért a draftból élesített PR-nak ezen az eseményen kell megkapnia a review-t —
+    # az alap típusok (opened, synchronize, reopened) között nincs benne.
+    types: [opened, synchronize, reopened, ready_for_review]
+
+# Pushonként új futás indul, és a régi eredménye már elavult kódra vonatkozna —
+# gyors egymásutáni pushoknál a folyamatban lévőt lemondjuk, hogy ne posztoljon
+# elavult kommentet (és API-költséget se égessen).
+concurrency:
+  group: claude-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+  id-token: write
+
+jobs:
+  claude-review:
+    # Draft PR-on nem futunk: a review-t majd az élesítés (ready_for_review) váltja ki.
+    if: ${{ !github.event.pull_request.draft }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: anthropics/claude-code-action@v1
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          # Alapból (pull_request esemény → "agent mode") Claude-nak MAGÁNAK kellene
+          # kommentelő tool-t hívnia — de ahhoz nincs jogosultsága, ezért néma marad
+          # (permission_denials_count > 0, 0 PR-komment). track_progress: true "tag
+          # mode"-ra kényszerít, ahol a WRAPPER action posztolja/frissíti a job SAJÁT
+          # követő-kommentjét a végső válasszal.
+          # FONTOS: use_sticky_comment: true NEM job-onkénti kommentet jelent, hanem
+          # PR-szinten EGYETLEN közös kommentet keres/frissít — mivel ebben a workflow-ban
+          # két job (claude-review + convention-audit) fut ugyanazon a PR-on, versenyeztek
+          # ugyanazon a kommenten, és a később végző felülírta a korábbit. Ezért itt NEM
+          # használjuk — track_progress önmagában is job-onként külön, mindig posztolt
+          # követő-kommentet ad.
+          track_progress: true
+          prompt: |
+            Review-old ezt a pull requestet magyarul. Fókusz: hibák, hiányzó
+            tesztek, a repo konvencióinak (docs/konvenciok.md) megsértése.
+            Rövid, tételes összefoglalót írj PR-kommentbe: probléma → fájl:sor → javaslat.
+            Akkor is írj rövid összefoglaló kommentet, ha nem találtál problémát.
+
+  # A TÉNYLEGES convention-audit subagentet futtatja (.claude/agents/convention-audit.md,
+  # model: sonnet) — nem duplikáljuk a promptját, a top-level Claude a Task tool-lal
+  # delegál rá. MINDIG kommentel — akkor is, ha nincs találat — hogy a PR-on lásd:
+  # az audit lefutott és tiszta.
+  #
+  # MIÉRT NEM `claude_args: --agent convention-audit`? Kipróbáltuk (PR #7→#8): a session
+  # ilyenkor ELEVE az agentként fut, de a track_progress tag-mód azt várja, hogy a session
+  # maga kezelje a PR-kommentet az action MCP-tooljaival — az agent szűkített (read-only:
+  # Read/Grep/Glob/Write) tool-készlete ehhez nem fér hozzá, ezért 2 kör után kiszállt
+  # ("I'll analyze this and get back to you."), audit nélkül. A Task-delegálásnál a
+  # top-level Claude (teljes tool-készlettel) viszi a GitHub-oldalt, és csak az auditot
+  # adja az agentnek — CLI-ben a --agent a best practice, Actions alatt ez.
+  convention-audit:
+    # Draft PR-on nem futunk — ugyanaz, mint a claude-review jobnál.
+    if: ${{ !github.event.pull_request.draft }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: anthropics/claude-code-action@v1
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          track_progress: true
+          prompt: |
+            Indítsd el a `convention-audit` subagentet (Task tool, subagent_type:
+            "convention-audit" — lásd .claude/agents/convention-audit.md) ezen a pull
+            requesten. A subagent read-only riportot ír a docs/ddd/ domain-modell és a
+            docs/konvenciok.md alapján. NE végezd el te magad az auditot, a subagent
+            eredményét használd fel.
+
+            A subagent riportja alapján írj PR-kommentet magyarul, FÜGGETLENÜL az
+            eredménytől:
+            - Ha van találat: a subagent priorizált (CRITICAL/HIGH/MEDIUM/LOW) listáját
+              tedd a kommentbe, fájl:sor hivatkozásokkal és javaslatokkal.
+            - Ha NINCS találat: írj egy rövid "✅ Konvenció-audit: nincs eltérés"
+              kommentet, 1-2 mondatban, mit nézett át a subagent — hogy a PR-on
+              látszódjon, hogy az audit lefutott.

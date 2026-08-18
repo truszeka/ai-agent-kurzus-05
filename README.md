@@ -1,0 +1,218 @@
+# 🌱 Plantbase
+
+> Parancssori (CLI) AI agent, amely a természetes nyelvű kérdést **SQL-re fordítja** egy növény-katalógus (`products`) felett, **read-only** lefuttatja, és **természetes nyelvű választ** ad. Önkiszolgáló analitika SQL-tudás nélkül.
+
+A persona egy **lakberendező**, aki a szobák adottságai (fény, méret), az ügyfél igényei és a büdzsé alapján állít össze növénycsomagot. Az adat megvan, de a kinyerése SQL-tudást igényelne — a Plantbase ezt automatizálja.
+
+A projekt egy AI-agent kurzus kísérleti repója: a cél, hogy az agent mechanikája **az alapoktól, rétegről rétegre** látszódjon (echo → LLM → SQL-es tool), agent-framework nélkül.
+
+---
+
+## Hogyan működik?
+
+```
+felhasználó kérdése
+        │
+        ▼
+   apps/cli  ──────────►  packages/core  (askAgent)
+  (commander,             │
+   readline)              │  1. system prompt (séma + szabályok, XML-tagolt)
+                          │  2. generateText (Vercel AI SDK)  ◄── stopWhen:
+                          │  3. a modell SQL-t ír  ──► runSql tool       stepCountIs(n)
+                          │  4. SELECT-guard + READ-ONLY kapcsolat ──► Postgres (products)
+                          │  5. sorok ──► a modell magyar választ ad
+                          ▼
+            természetes nyelvű válasz  +  élő színes trace
+                          +  logs/<timestamp>.json  +  logs/agent.log
+```
+
+A `packages/core` **framework-agnostic**: nem ismeri a belépési pontot (CLI/API/web). Az agent a **Vercel AI SDK 6**-ra épül (`generateText` + `stopWhen: stepCountIs(n)`): a prompt → tool-hívás → tool-eredmény → ismétlés ciklust az SDK futtatja, de a lépésenkénti átláthatóságot a saját trace-rétegünk adja (`prepareStep`/`onStepFinish` → trace.ts). A loop eredetileg kézzel íródott a nyers Anthropic SDK fölé — a tananyag ezt a fejlődést követi.
+
+---
+
+## Háromrétegű read-only védelem (NFR1)
+
+Az agent **soha nem módosítja az adatot**. Három, egymástól független réteg gondoskodik erről:
+
+1. **DB-szerepkör** — a `runSql` a `plantbase_ro` (csak `SELECT`) szerepkörön fut, ami fizikailag sem tud írni.
+2. **SELECT-guard** — a generált SQL-t a `core/sql-guard` ellenőrzi: csak `SELECT`/`WITH … SELECT`, egyetlen utasítás, kötelező `LIMIT`.
+3. **Read-only tranzakció** — minden lekérdezés `START TRANSACTION READ ONLY`-ban fut.
+
+A Prisma (séma, migráció, seed) ezzel szemben a **READ-WRITE** kapcsolatot használja — két DB-URL, két jog.
+
+---
+
+## Tech stack
+
+| Réteg          | Eszköz                                                       |
+| -------------- | ------------------------------------------------------------ |
+| Monorepo       | Nx 23, pnpm workspaces, TypeScript (strict), Node LTS        |
+| Agent          | Vercel AI SDK 6 (`generateText` + `stopWhen: stepCountIs`) + saját trace-réteg |
+| Validáció      | Zod (rendszer-határokon)                                     |
+| CLI            | commander + `node:readline`                                  |
+| Adatbázis      | PostgreSQL 17 (docker-compose, OrbStack), `pg` (read-only)   |
+| ORM / migráció | Prisma 6 (séma, migráció, seed)                              |
+| Tooling        | Vitest, ESLint, Prettier, tsx                                |
+
+---
+
+## Projektstruktúra
+
+```
+.
+├── apps/
+│   ├── cli/             # plantbase CLI: ask parancs + interaktív mód
+│   ├── server/          # Express API: /api/chat + /debug/knowledge
+│   └── web/             # Vite + React chat UI, tool-kártyák
+├── packages/
+│   ├── core/            # agent-logika (framework-agnostic)
+│   │   └── src/lib/     # agent (Vercel AI SDK loop), config, prompts, trace, echo, rag
+│   │       └── tools/   # run-sql, search-knowledge, sql-guard, db-readonly, dispatch
+│   └── db/               # Prisma lib: séma (products, knowledge_chunks), migráció, generált kliens, seed
+├── seed/knowledge/      # tudásbázis-cikkek a knowledge:ingest scripthez
+├── docs/                # BRS, architektúra, stack, konvenciók, system-prompt, terv
+├── docker-compose.yml   # Postgres + read-only role (initdb)
+└── .env.example         # két DB-kapcsolat (RW/RO) + Anthropic kulcs/model
+```
+
+---
+
+## Előfeltételek
+
+- Node LTS, **pnpm** (`corepack enable`)
+- **Docker** (OrbStack a Postgreshez)
+- `psql` (opcionális, kézi ellenőrzéshez)
+- **Anthropic API-kulcs**
+
+## Indulás
+
+```bash
+# 1. Függőségek (a postinstall lefuttatja a `prisma generate`-et)
+pnpm install
+
+# 2. Környezeti változók — másold és töltsd ki az ANTHROPIC_API_KEY-t
+cp .env.example .env
+
+# 3. Postgres indítása (a read-only role-t az initdb hozza létre)
+docker compose up -d
+
+# 4. Séma + kész seed (~30 növény) betöltése
+pnpm db:migrate        # init_products migráció
+pnpm db:seed           # idempotens: 30 növény
+```
+
+> A Postgres a **host 5433-as porton** fut (a 5432-t gyakran foglalja másik projekt) — lásd `docker-compose.yml` és `.env.example`.
+
+## Használat
+
+```bash
+# Egyszeri kérdés
+pnpm cli ask "mutass 3 pet-safe, alacsony fényigényű növényt raktáron, 5000 Ft alatt"
+
+# Interaktív mód (több kérdés, 'exit'-ig)
+pnpm cli ask
+
+# Csendes mód: csak a végső válasz, élő trace nélkül (a JSON nyom akkor is elkészül)
+pnpm cli ask --quiet "milyen pozsgásokat ajánlasz?"
+
+# Súgó
+pnpm cli --help
+```
+
+Minden interakció **kétféleképpen átlátható**:
+
+- **Élő színes trace** a konzolon — lépésről lépésre látszik a teljes mechanika: a kérés paraméterei (model, max_tokens, tools, system, messages), a modell generálta SQL, a tool-eredmény és a végső válasz. (`--quiet`-tel kikapcsolható.)
+- **Pretty JSON nyom** minden futásról: `logs/<timestamp>.json` (system prompt, üzenetek, **generált SQL**, eredmény, válasz, token-felhasználás).
+- **Folyamatos „control room" log** a `logs/agent.log`-ban — külön terminálban `tail -f logs/agent.log`-gal követhető, a `--quiet`-tól függetlenül.
+
+A modell `.env`-ből állítható (`ANTHROPIC_MODEL`); költségérzékeny demóhoz pl. `claude-haiku-4-5`.
+
+---
+
+## Hasznos scriptek
+
+| Script                    | Mit csinál                                       |
+| ------------------------- | ------------------------------------------------ |
+| `pnpm cli ask "…"`        | CLI futtatása tsx-szel (nincs build futásonként) |
+| `pnpm db:migrate`         | Prisma migráció (dev)                            |
+| `pnpm db:seed`            | Seed betöltése (idempotens)                      |
+| `pnpm db:studio`          | Prisma Studio                                    |
+| `pnpm build`              | minden projekt buildje (`nx run-many -t build`)  |
+| `pnpm test`               | Vitest (unit tesztek)                            |
+| `pnpm lint` / `typecheck` | ESLint / `tsc`                                   |
+| `pnpm format`             | Prettier                                         |
+| `pnpm server`             | Express API dev-módban (port 3001)               |
+| `pnpm web`                | Vite dev-szerver a chat UI-hoz (port 4200)       |
+| `pnpm knowledge:ingest`   | tudásbázis-cikkek darabolása + vektorizálása a knowledge_chunks táblába |
+
+---
+
+## RAG Pipeline
+
+A `pnpm cli knowledge-ingest` betölti a `seed/knowledge/` gondozási cikkeket a `knowledge_chunks`
+pgvector táblába. Ha a tudásbázis be van töltve, a `pnpm cli ask "..."` automatikusan a
+**RAG-agentet** hívja (HyDE + embedding + Cohere rerank + grounded, forrás-hivatkozásos válasz);
+üres tudásbázisnál változatlanul a meglévő SQL-agentre esik vissza. Előfeltétel a RAG-úthoz:
+`OPENAI_API_KEY` és `COHERE_API_KEY` a `.env`-ben.
+
+### Multi-provider szereposztás
+
+| Feladat | Provider | Modell | Indoklás |
+|---------|----------|--------|----------|
+| Válasz-generálás | Anthropic | (a `config.ts` `ANTHROPIC_MODEL`-je) | Már integrált, magyar szöveg, XML-tag prompt |
+| HyDE document | Anthropic | `claude-haiku-4-5-20251001` | Olcsóbb, csak rövid hipotetikus doc kell |
+| Embedding | OpenAI | `text-embedding-3-small` | Anthropic nem ad embedding API-t; legolcsóbb stabil opció (dim=1536) |
+| Rerank | Cohere | `rerank-english-v3.0` | Dokumentált rerank API, kurzus-követelmény |
+
+### Chunking stratégia — B (szekció-alapú)
+
+A 202 gondozási cikk Markdown `##`/`###` headingek mentén kerül szétbontásra (target: 120 szó,
+max: 250 szó, 1 mondatos overlap). Indoklás: a cikkek heading-struktúráltak (minden cikknél van
+`##`), a szekciók természetes szemantikai határokat képeznek (pl. „Watering", „Light
+Requirements"), és az overlap csökkenti a határon elveszett kontextust. Fejléc nélküli cikknél
+bekezdés-alapú fallback lép életbe.
+
+### Költségbecslés
+
+> Töltsd ki a saját futtatásod számaival (`pnpm cli knowledge-ingest` és egy `ask` futtatás után).
+> Nagyságrendi becslés:
+
+**Ingest (202 dokumentum, ~_XXXX_ chunk):**
+- Embedding: ~_XXXX_ token × $0.02/1M = ~$_X.XX_
+
+**Egy kérdés (teljes pipeline):**
+- HyDE generálás (haiku): ~300 token output ≈ $0.00X
+- Embedding (1 kérdés): ~50 token ≈ $0.000001
+- Cohere rerank (top-20): ~$0.001
+- Válasz-generálás (sonnet): ~800 token input + ~300 output ≈ $0.00X
+- **Összesen egy kérdés: ~$0.00X–0.0X**
+
+Részletek: a golden set eredménye a [`docs/golden-set.md`](docs/golden-set.md)-ben, a tudásbázis-
+karbantartási terv a [`docs/tudasbazis-karbantartas.md`](docs/tudasbazis-karbantartas.md)-ben.
+
+---
+
+## A három implementációs fázis
+
+A működés rétegről rétegre épül (lásd `docs/proposal-implementacio.md`):
+
+1. **CLI echo** — a CLI visszaírja a bemenetet (még nincs LLM, nincs DB).
+2. **LLM, DB nélkül** — sima `messages.create`; adat-kérdésnél az agent **őszintén jelzi**, hogy nincs adatbázis-hozzáférése, és nem talál ki adatot.
+3. **SQL-es interakció** — a `runSql` toollal a kérdésből SQL lesz, read-only lefut, és valós, természetes nyelvű választ kapsz.
+
+---
+
+## Dokumentáció
+
+A részletek a [`docs/`](docs/) mappában:
+
+- [`brs-plantbase.md`](docs/brs-plantbase.md) — üzleti követelmények (BRS), ROI, scope
+- [`architektura.md`](docs/architektura.md) — fájlstruktúra és kulcsdöntések
+- [`stack.md`](docs/stack.md) — tech stack és a `products` séma
+- [`setup-instructions.md`](docs/setup-instructions.md) — lépésről lépésre környezet-felállítás
+- [`konvenciok.md`](docs/konvenciok.md) — kódkonvenciók, prompt-stílus
+- [`system-prompt.md`](docs/system-prompt.md) — a termék-agent system promptja
+- [`dev-workflow.md`](docs/dev-workflow.md) — git, hookok, dokumentáció
+- [`golden-set.md`](docs/golden-set.md) — RAG golden set (raw vs. rerank), negatív teszt
+- [`tudasbazis-karbantartas.md`](docs/tudasbazis-karbantartas.md) — RAG index inkrementális karbantartás
+- [`proposal-implementacio.md`](docs/proposal-implementacio.md) — a fázisolt implementációs terv
