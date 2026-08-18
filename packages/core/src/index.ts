@@ -43,6 +43,14 @@ export * from './lib/tools/search-knowledge/hyde-generator.js';
 export * from './lib/tools/search-knowledge/cohere-rerank.js';
 export * from './lib/tools/search-knowledge/search-knowledge-tool.js';
 
+// Ügyféloldali use case — az ÜGY (case) fogalma: űrlap → agent-tervezet → EMBERI jóváhagyás
+export * from './lib/cases/case-schema.js';
+export * from './lib/cases/case-store.js';
+export * from './lib/cases/case-service.js';
+export * from './lib/agents/advisor-agent/advisor-agent.js';
+export * from './lib/agents/advisor-agent/advisor-prompt.js';
+export * from './lib/agents/advisor-agent/recommendation-parser.js';
+
 // Ki beszél az agenttel: szerep-alapú képesség-kapcsolás (customer / admin)
 export * from './lib/user-role/user-role.js';
 

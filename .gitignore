@@ -61,6 +61,9 @@ Thumbs.db
 !.env.example
 # agent interakció-naplók (FR4)
 logs/
+
+# Ügytároló (futásidejű adat, nem verziózzuk)
+data/
 # generált Prisma kliens (packages/db)
 packages/db/generated/
 vite.config.*.timestamp*

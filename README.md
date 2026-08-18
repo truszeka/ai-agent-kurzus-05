@@ -44,15 +44,15 @@ A Prisma (séma, migráció, seed) ezzel szemben a **READ-WRITE** kapcsolatot ha
 
 ## Tech stack
 
-| Réteg          | Eszköz                                                       |
-| -------------- | ------------------------------------------------------------ |
-| Monorepo       | Nx 23, pnpm workspaces, TypeScript (strict), Node LTS        |
+| Réteg          | Eszköz                                                                         |
+| -------------- | ------------------------------------------------------------------------------ |
+| Monorepo       | Nx 23, pnpm workspaces, TypeScript (strict), Node LTS                          |
 | Agent          | Vercel AI SDK 6 (`generateText` + `stopWhen: stepCountIs`) + saját trace-réteg |
-| Validáció      | Zod (rendszer-határokon)                                     |
-| CLI            | commander + `node:readline`                                  |
-| Adatbázis      | PostgreSQL 17 (docker-compose, OrbStack), `pg` (read-only)   |
-| ORM / migráció | Prisma 6 (séma, migráció, seed)                              |
-| Tooling        | Vitest, ESLint, Prettier, tsx                                |
+| Validáció      | Zod (rendszer-határokon)                                                       |
+| CLI            | commander + `node:readline`                                                    |
+| Adatbázis      | PostgreSQL 17 (docker-compose, OrbStack), `pg` (read-only)                     |
+| ORM / migráció | Prisma 6 (séma, migráció, seed)                                                |
+| Tooling        | Vitest, ESLint, Prettier, tsx                                                  |
 
 ---
 
@@ -129,20 +129,66 @@ A modell `.env`-ből állítható (`ANTHROPIC_MODEL`); költségérzékeny demó
 
 ---
 
+## Ügyféloldali use case — növénycsomag-ajánló emberi jóváhagyással
+
+Az ügyfél webes űrlapon megadja a szoba adottságait és az igényeit; az agent a katalógusból
+csomagtervezetet állít össze; a tervezet **csak lakberendezői jóváhagyás után** válik láthatóvá.
+(Terv: `docs/ugyfeloldali-use-case-terv.md`, lépéssor: `docs/superpowers/plans/2026-08-18-ugyfeloldali-use-case.md`.)
+
+```bash
+pnpm server   # API (3001) — az ügy-végpontokkal együtt
+pnpm web      # UI (4200)
+```
+
+A `http://localhost:4200` négy fület kínál:
+
+| Fül            | Kinek        | Mit csinál                                                                 |
+| -------------- | ------------ | -------------------------------------------------------------------------- |
+| Igényfelmérő   | ügyfél       | szoba + igények beküldése, **ügyazonosító** (pl. `PB-7QK3ZA`)              |
+| Ügyem állapota | ügyfél       | státusz-idővonal, jóváhagyás után a csomag, teljes ár, indoklás            |
+| Ellenőrzés     | lakberendező | várólista, eredeti kérés, generált SQL, tervezet, figyelmeztetések, döntés |
+| Katalógus-chat | bárki        | a korábbi kérdés-válasz felület (query-agent)                              |
+
+Az ügy életútja: `Beérkezett → Feldolgozás alatt → Emberi ellenőrzésre vár → Jóváhagyva →
+Ajánlat elkészült` (illetve `Módosításra visszaküldve` / `Elutasítva`).
+
+**Végpontok**
+
+| Metódus | Útvonal                              | Kinek                                                        |
+| ------- | ------------------------------------ | ------------------------------------------------------------ |
+| `POST`  | `/api/cases`                         | ügyfél — igény beküldése                                     |
+| `GET`   | `/api/cases/:caseId`                 | ügyfél — szűrt státusz (jóváhagyatlan ajánlat sosem megy ki) |
+| `GET`   | `/api/review/cases?status=`          | lakberendező — várólista                                     |
+| `GET`   | `/api/review/cases/:caseId`          | lakberendező — teljes nézet                                  |
+| `POST`  | `/api/review/cases/:caseId/decision` | lakberendező — `approve` / `revise` / `reject`               |
+| `GET`   | `/api/review/metrics`                | mérési terv metrikái                                         |
+
+**Amit a demó garantál**
+
+- Az ügyfél neve és e-mail-címe **nem kerül a modellhez** — csak a szoba, a preferenciák és a keret.
+- Minden ügy emberi ellenőrzésre áll meg; jóváhagyás nélkül nincs ajánlat az ügyféloldalon.
+- Bizonytalanság (hiányzó adat, nincs találat, keret nem tartható, hibás SQL, hatókörön kívüli
+  kérés) → **eszkalációs ok** a lakberendezőnek, nem kitalált ajánlat.
+
+Az ügyek egy egyszerű JSON fájlban élnek (`data/cases.json`, a `CASES_FILE` env-vel átállítható);
+a `products` katalógus továbbra is read-only Postgres.
+
+---
+
 ## Hasznos scriptek
 
-| Script                    | Mit csinál                                       |
-| ------------------------- | ------------------------------------------------ |
-| `pnpm cli ask "…"`        | CLI futtatása tsx-szel (nincs build futásonként) |
-| `pnpm db:migrate`         | Prisma migráció (dev)                            |
-| `pnpm db:seed`            | Seed betöltése (idempotens)                      |
-| `pnpm db:studio`          | Prisma Studio                                    |
-| `pnpm build`              | minden projekt buildje (`nx run-many -t build`)  |
-| `pnpm test`               | Vitest (unit tesztek)                            |
-| `pnpm lint` / `typecheck` | ESLint / `tsc`                                   |
-| `pnpm format`             | Prettier                                         |
-| `pnpm server`             | Express API dev-módban (port 3001)               |
-| `pnpm web`                | Vite dev-szerver a chat UI-hoz (port 4200)       |
+| Script                    | Mit csinál                                                              |
+| ------------------------- | ----------------------------------------------------------------------- |
+| `pnpm cli ask "…"`        | CLI futtatása tsx-szel (nincs build futásonként)                        |
+| `pnpm db:migrate`         | Prisma migráció (dev)                                                   |
+| `pnpm db:seed`            | Seed betöltése (idempotens)                                             |
+| `pnpm db:studio`          | Prisma Studio                                                           |
+| `pnpm build`              | minden projekt buildje (`nx run-many -t build`)                         |
+| `pnpm test`               | Vitest (unit tesztek)                                                   |
+| `pnpm lint` / `typecheck` | ESLint / `tsc`                                                          |
+| `pnpm format`             | Prettier                                                                |
+| `pnpm server`             | Express API dev-módban (port 3001)                                      |
+| `pnpm web`                | Vite dev-szerver a webes felületekhez (port 4200)                       |
 | `pnpm knowledge:ingest`   | tudásbázis-cikkek darabolása + vektorizálása a knowledge_chunks táblába |
 
 ---
@@ -157,12 +203,12 @@ pgvector táblába. Ha a tudásbázis be van töltve, a `pnpm cli ask "..."` aut
 
 ### Multi-provider szereposztás
 
-| Feladat | Provider | Modell | Indoklás |
-|---------|----------|--------|----------|
-| Válasz-generálás | Anthropic | (a `config.ts` `ANTHROPIC_MODEL`-je) | Már integrált, magyar szöveg, XML-tag prompt |
-| HyDE document | Anthropic | `claude-haiku-4-5-20251001` | Olcsóbb, csak rövid hipotetikus doc kell |
-| Embedding | OpenAI | `text-embedding-3-small` | Anthropic nem ad embedding API-t; legolcsóbb stabil opció (dim=1536) |
-| Rerank | Cohere | `rerank-english-v3.0` | Dokumentált rerank API, kurzus-követelmény |
+| Feladat          | Provider  | Modell                               | Indoklás                                                             |
+| ---------------- | --------- | ------------------------------------ | -------------------------------------------------------------------- |
+| Válasz-generálás | Anthropic | (a `config.ts` `ANTHROPIC_MODEL`-je) | Már integrált, magyar szöveg, XML-tag prompt                         |
+| HyDE document    | Anthropic | `claude-haiku-4-5-20251001`          | Olcsóbb, csak rövid hipotetikus doc kell                             |
+| Embedding        | OpenAI    | `text-embedding-3-small`             | Anthropic nem ad embedding API-t; legolcsóbb stabil opció (dim=1536) |
+| Rerank           | Cohere    | `rerank-english-v3.0`                | Dokumentált rerank API, kurzus-követelmény                           |
 
 ### Chunking stratégia — B (szekció-alapú)
 
@@ -178,9 +224,11 @@ bekezdés-alapú fallback lép életbe.
 > Nagyságrendi becslés:
 
 **Ingest (202 dokumentum, ~_XXXX_ chunk):**
+
 - Embedding: ~_XXXX_ token × $0.02/1M = ~$_X.XX_
 
 **Egy kérdés (teljes pipeline):**
+
 - HyDE generálás (haiku): ~300 token output ≈ $0.00X
 - Embedding (1 kérdés): ~50 token ≈ $0.000001
 - Cohere rerank (top-20): ~$0.001

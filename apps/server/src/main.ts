@@ -3,6 +3,7 @@ import { join } from 'node:path';
 import express from 'express';
 import cors from 'cors';
 import { convertToModelMessages, type UIMessage } from 'ai';
+import { casesRouter } from './cases-routes.js';
 import {
   askAgent,
   loadConfig,
@@ -47,10 +48,16 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
+// Az ügyféloldali use case (igényfelmérő → agent-tervezet → emberi jóváhagyás → státusz)
+// saját routerben lakik; a /api/chat változatlanul a korábbi kérdés-válasz felület.
+app.use(casesRouter());
+
 // Az UIMessage szöveg-részeiből (text parts) állítja össze a nyers kérdést-szöveget.
 function extractText(message: UIMessage): string {
   return message.parts
-    .filter((part): part is { type: 'text'; text: string } => part.type === 'text')
+    .filter(
+      (part): part is { type: 'text'; text: string } => part.type === 'text',
+    )
     .map((part) => part.text)
     .join('')
     .trim();

@@ -177,4 +177,13 @@ Legalább az SQL-hibaarányt és az ember által javított ajánlatok arányát 
 
 ## 11. Technikai előfeltétel
 
-A jelenlegi repóban csak a feladat dokumentumai találhatók, a korábbi Plantbase forráskód nem. A megvalósításhoz a korábbi alkalmazás kódját ebbe a repóba kell másolni, vagy annak szükséges működő részét itt újra létre kell hozni.
+A korábbi Plantbase forráskód azóta bekerült a repóba (`packages/core`, `apps/server`, `apps/web`, `packages/db`), így a use case erre épül rá, nem kell újra létrehozni.
+
+A megvalósítás helye:
+
+- `packages/core/src/lib/cases/` — az ügy fogalma: séma, JSON-tároló, életút (`case-service.ts`);
+- `packages/core/src/lib/agents/advisor-agent/` — az ajánló agent (prompt + JSON-kimenet validálás);
+- `apps/server/src/cases-routes.ts` — az ügyféloldali és a lakberendezői végpontok;
+- `apps/web/src/features/cases/` — az igényfelmérő, a státuszoldal és az ellenőrzőfelület.
+
+A részletes lépéssor: `docs/superpowers/plans/2026-08-18-ugyfeloldali-use-case.md`.
